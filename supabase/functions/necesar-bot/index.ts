@@ -344,8 +344,22 @@ async function handleFurnizorCommand(cfg: Config, msg: TgMessage, text: string):
   return new Response("furnizor-saved");
 }
 
+/** Short prompts like "La olimpic?" / "Imdia" — set context only, don't create order. */
+function isSupplierPromptOnly(text: string, suppliers: Supplier[]): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (!findSupplierInText(t, suppliers)) return false;
+  const lines = t.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  // Multiline with products (e.g. "Aqvila\nCartofi...") → necesar, not prompt
+  if (lines.length >= 2) return false;
+  if (t.endsWith("?")) return true;
+  return t.length < 40;
+}
+
 async function handleLongin(cfg: Config, msg: TgMessage, suppliers: Supplier[]): Promise<Response> {
   const text = (msg.text ?? msg.caption ?? "").trim();
+  const photoFileId = extractPhotoFileId(msg);
+  const body = messageBody(msg);
 
   if (text.toLowerCase().startsWith("/furnizor")) {
     return await handleFurnizorCommand(cfg, msg, text);
@@ -355,12 +369,19 @@ async function handleLongin(cfg: Config, msg: TgMessage, suppliers: Supplier[]):
     return await handleAdminOk(cfg, msg);
   }
 
-  if (text) {
-    const found = findSupplierInText(text, suppliers);
-    if (found) {
-      await setActiveSupplier(msg.chat.id, found.id);
-      return new Response(`active-supplier:${found.name}`);
-    }
+  // "La olimpic?", "Imdia" → only set active supplier
+  if (text && !photoFileId && isSupplierPromptOnly(text, suppliers)) {
+    const found = findSupplierInText(text, suppliers)!;
+    await setActiveSupplier(msg.chat.id, found.id);
+    return new Response(`active-supplier:${found.name}`);
+  }
+
+  // Longin also posts product lists / photos → same path as members
+  if (photoFileId || (body.trim() && !body.trim().startsWith("/") && !isQuestion(body, false))) {
+    // If first line names a supplier, keep group context in sync
+    const fromFirst = findSupplierInText(firstLine(body), suppliers);
+    if (fromFirst) await setActiveSupplier(msg.chat.id, fromFirst.id);
+    return await handleMemberNewOrStitch(cfg, msg, suppliers);
   }
 
   return new Response("admin-skip");
